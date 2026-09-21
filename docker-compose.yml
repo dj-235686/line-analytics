@@ -1,0 +1,19 @@
+services:
+  db:
+    image: postgres:16
+    container_name: line-analytics-db
+    environment:
+      POSTGRES_USER: line
+      POSTGRES_PASSWORD: line
+      POSTGRES_DB: line
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U line -d line"]
+      interval: 5s
+      retries: 10
+
+volumes:
+  pgdata:
