@@ -1,6 +1,8 @@
 -- schema.sql - tables for the line-analytics project.
 -- load.py runs this file on every load, so it drops and recreates everything.
 
+DROP VIEW IF EXISTS events_dedup;
+
 DROP TABLE IF EXISTS raw_events;
 DROP TABLE IF EXISTS truth_states;
 DROP TABLE IF EXISTS truth_outages;
