@@ -178,6 +178,5 @@ line-analytics/
 
 ## Note on tooling
 
-AI assistance (Claude) was used throughout: for the simulator and loader, the
-Python checks, and drafting the SQL. Every result was run locally and checked
+AI assistance (Claude) was used for drafting the SQL. Every result was run locally and checked
 against the simulator's truth tables; the numbers above come from those runs.
