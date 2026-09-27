@@ -87,3 +87,26 @@ def test_no_outage_means_no_camera_label():
     gaps = checks.camera_gap_vs_stoppage(camera)
     assert len(gaps) > 0                              # real stoppages happen...
     assert (gaps["label"] == "real stoppage").all()   # ...and none is blamed on the camera
+
+def seed42_camera():
+    """The feed simulate.py writes by default: seed 42, 3 days."""
+    rng = np.random.default_rng(42)
+    events, _ = simulate.run_line(days=3.0, rng=rng)
+    outages = simulate.pick_outages(3.0, rng)
+    return simulate.make_camera_feed(events, outages, START_UTC, rng)
+
+
+def test_clock_drift_finds_the_fast_camera():
+    pairs, cameras = checks.clock_drift(seed42_camera())
+    impossible = pairs.set_index("pair")["impossible_handoffs"]
+    assert impossible["S2->S3"] > 0                      # S2's clock says parts left late
+    assert impossible[["S1->S2", "S3->S4"]].eq(0).all()
+    assert cameras["CAM-S2"] == pytest.approx(simulate.S2_CLOCK_DRIFT_S_PER_HOUR, abs=0.3)
+    assert cameras.drop("CAM-S2").abs().max() < 0.3
+
+
+def test_no_drift_means_no_impossible_handoffs(monkeypatch):
+    monkeypatch.setattr(simulate, "S2_CLOCK_DRIFT_S_PER_HOUR", 0.0)
+    pairs, cameras = checks.clock_drift(seed42_camera())
+    assert (pairs["impossible_handoffs"] == 0).all()
+    assert cameras.abs().max() < 0.3

@@ -5,6 +5,7 @@ The SQL in sql/ shows the problems; these checks deal with them:
     duplicate_report / dedup   re-sent events (defect 2)
     to_utc                     naive local time -> UTC, incl. the DST hour (defect 4)
     camera_gap_vs_stoppage     offline camera vs stopped station (defect 1, the headline)
+    clock_drift                a camera clock running fast or slow (defect 3)
 
 Every check works on a DataFrame with the raw_events columns, so the tests
 can run on simulator output without a database.
@@ -25,6 +26,7 @@ BERLIN = "Europe/Berlin"
 KEY = ["station_id", "part_id", "event_type"]   # identifies one real event
 EVENT_ORDER = {"start": 0, "end": 1}
 MIN_GAP = pd.Timedelta("10min")                   # same threshold as sql/04
+LINE = ["S1", "S2", "S3", "S4"]                   # stations in flow order
 
 
 def fetch(sql: str) -> pd.DataFrame:
@@ -137,6 +139,56 @@ def camera_gap_vs_stoppage(events: pd.DataFrame, min_gap: pd.Timedelta = MIN_GAP
     return pd.DataFrame(rows, columns=columns)
 
 
+# --- Clock drift (defect 3) -------------------------------------------------
+
+def theil_sen_slope(x: np.ndarray, y: np.ndarray) -> float:
+    """Median of the slopes between every pair of points - a line fit that
+    a few far-off points cannot drag around (unlike least squares)."""
+    i, j = np.triu_indices(len(x), k=1)
+    return float(np.median((y[j] - y[i]) / (x[j] - x[i])))
+
+
+def clock_drift(events: pd.DataFrame, line: list[str] = LINE):
+    """Estimate how fast each camera's clock runs compared with the others.
+
+    A part cannot start at the next station before it has finished at this
+    one, so the handoff time start(next) - end(this) is never negative. Its
+    hourly minimum stays flat while both clocks agree: it is 0 whenever the
+    next station was waiting for that very part. If one clock runs fast, that
+    floor moves steadily, and the slope of the floor is the drift between the
+    two cameras. Chaining the pairs along the line gives every camera's drift
+    relative to the first one; subtracting the median assumes most clocks
+    are right.
+
+    Returns (pairs, cameras): per neighbour pair the number of impossible
+    (negative) handoffs and the floor slope; per camera the drift in s/hour.
+    """
+    events = dedup(events)
+    events = events.assign(ts_utc=to_utc(events))
+    first = events["ts_utc"].min()
+    t = events.pivot_table(index="part_id", columns=["station_id", "event_type"],
+                           values="ts_utc", aggfunc="min")
+
+    rows = []
+    for up, down in zip(line, line[1:]):
+        handoff = pd.DataFrame({
+            "hour": (t[(up, "end")] - first).dt.total_seconds() // 3600,
+            "handoff_s": (t[(down, "start")] - t[(up, "end")]).dt.total_seconds(),
+        }).dropna()
+        floor = handoff.groupby("hour")["handoff_s"].min()
+        rows.append({
+            "pair": f"{up}->{down}",
+            "impossible_handoffs": int((handoff["handoff_s"] < 0).sum()),
+            "floor_slope_s_per_h": theil_sen_slope(floor.index.to_numpy(), floor.to_numpy()),
+        })
+    pairs = pd.DataFrame(rows)
+
+    relative = np.concatenate([[0.0], pairs["floor_slope_s_per_h"].cumsum()])
+    cameras = pd.Series(relative - np.median(relative),
+                        index=[f"CAM-{s}" for s in line], name="drift_s_per_h")
+    return pairs.round(2), cameras.round(2)
+
+
 # --- Grading (the truth tables exist only in the simulator) ------------------
 
 def _overlaps(table, station, start, end, start_col, end_col) -> bool:
@@ -190,6 +242,12 @@ def main() -> None:
     around_dst = (gaps["gap_start_utc"] < dst_end) & (gaps["gap_end_utc"] > dst_start)
     print("\nGaps touching the repeated DST hour (sql/04 got these wrong):")
     print(gaps[around_dst].to_string(index=False))
+
+    pairs, cameras = clock_drift(raw)
+    print("\nClock drift - handoffs between neighbouring cameras:")
+    print(pairs.to_string(index=False))
+    print("Drift per camera (s/hour): "
+          + ", ".join(f"{cam} {d:+.2f}" for cam, d in cameras.items()))
 
     found, false_alarms = grade_against_truth(gaps, truth)
     print(f"\nGRADING vs truth_outages: found {found['found'].sum()} of {len(found)}, "
